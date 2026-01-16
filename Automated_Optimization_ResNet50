@@ -1,0 +1,220 @@
+from tensorflow.keras.optimizers import Adam, SGD, RMSprop
+import os
+import zipfile
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from datetime import datetime
+from tensorflow.keras.applications.resnet50 import ResNet50
+import tensorflow as tf
+from tensorflow.keras import Model
+from keras.layers import Dense, Activation, Flatten, Dropout
+from tensorflow.python.keras.losses import BinaryCrossentropy
+# from tensorflow.python.keras.models import Sequential
+from tensorflow.keras.models import Sequential
+import keras
+from tensorflow.keras import layers
+
+# installing the TensorFlow version and cuda version at the start of colab.
+# !pip install tensorflow==2.8
+# !apt install --allow-change-held-packages libcudnn8=8.1.0.77-1+cuda11.2
+
+# Obtainig a dataset, cats and dogs, for this case
+!wget --no-check-certificate \
+    https://storage.googleapis.com/mledu-datasets/cats_and_dogs_filtered.zip \
+    -O /tmp/cats_and_dogs_filtered.zip
+
+local_zip = '/tmp/cats_and_dogs_filtered.zip'
+zip_ref = zipfile.ZipFile(local_zip, 'r')
+zip_ref.extractall('/tmp')
+zip_ref.close()
+
+base_dir = '/tmp/cats_and_dogs_filtered'
+train_dir = os.path.join(base_dir, 'train')
+validation_dir = os.path.join(base_dir, 'validation')
+
+# Directory with training cat pictures
+train_cats_dir = os.path.join(train_dir, 'cats')
+
+# Directory with training dog pictures
+train_dogs_dir = os.path.join(train_dir, 'dogs')
+
+# Directory with validation cat pictures
+validation_cats_dir = os.path.join(validation_dir, 'cats')
+
+# Directory with validation dog pictures
+validation_dogs_dir = os.path.join(validation_dir, 'dogs') 
+
+
+# A function to prepare data with batch size and image size as inputs
+def prepare(b_size, im_size):
+  train_datagen = ImageDataGenerator(rescale=1. / 255., rotation_range=40, width_shift_range=0.2, height_shift_range=0.2, shear_range=0.2, zoom_range=0.2, horizontal_flip=True)
+  test_datagen = ImageDataGenerator(rescale=1.0 / 255.)
+  train_generator = train_datagen.flow_from_directory(train_dir, batch_size=b_size, class_mode='binary', target_size=(im_size, im_size))
+  validation_generator = test_datagen.flow_from_directory(validation_dir, batch_size=b_size, class_mode='binary', target_size=(im_size, im_size))
+  return train_generator, validation_generator
+
+
+# A function to build a deep learning model having learning rate, optimizer, and image size as arguments
+def build(l_rate, optim, im_size):
+  base_model = ResNet50(input_shape=(im_size, im_size,3), include_top=False, weights="imagenet")
+
+  for layer in base_model.layers:
+    layer.trainable = False
+  
+  base_model = Sequential()
+  base_model.add(ResNet50(include_top=False, weights='imagenet', pooling='max'))
+  base_model.add(Dense(1, activation='sigmoid'))
+  loss = BinaryCrossentropy()
+  base_model.compile(optimizer = optim, loss = loss, metrics = ['accuracy'])
+
+  return base_model
+
+
+# Function to extract the final validation accuracy from the dictionary
+def final_accuracy(val_accuracy):
+  len_ = len(val_accuracy)
+  f_accuracy = val_accuracy[len_ - 1]
+  return f_accuracy
+
+
+# Function to print the training time before, during, and after optimization
+def train_time():
+  now = datetime.now()
+  current_time = now.strftime("%H:%M:%S")
+  print("The current time is:", current_time)
+
+
+# Function to train the deep learning model
+def train_model(model_input, train_generator, validation_generator, num_epoch):
+  my_callbacks = [keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True)]
+  trained_model = model_input.fit(train_generator, validation_data=validation_generator, epochs=num_epoch, callbacks=my_callbacks)
+  val_accuracy = trained_model.history['val_accuracy']
+  return val_accuracy, trained_model
+
+
+# Function to unfreeze top 20 layers which are not batch normalized
+def unfreeze_model(model, l_rate):
+  # We unfreeze the top 20 layers while leaving BatchNorm layers frozen
+  for layer in model.layers[-20:]:
+    if not isinstance(layer, layers.BatchNormalization):
+      layer.trainable = True
+
+  new_rate = l_rate / 10
+  loss = BinaryCrossentropy()
+  adam = Adam(learning_rate = new_rate, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
+  model.compile(optimizer = adam, loss = loss, metrics = ['accuracy'])
+  return model, new_rate
+
+
+# Function to create minibathes with given batch size
+import numpy as np
+
+def createMiniBatches(b_size):
+    new_size = b_size
+    min_batches = []
+    batches = []
+    
+    #Decreasing direction
+    while new_size >= 8:
+        min_batches.append(new_size)
+        new_size  /= 2
+        new_size = int(new_size)
+    
+    #Resetting batch size
+    new_size = b_size
+    
+    #Increasing direction
+    while new_size < 128:
+        new_size *= 2
+        min_batches.append(new_size)
+    
+    #Resetting batch size   
+    new_size = 0
+    batches = np.sort(min_batches)
+    #Returning an array of minibatches
+    return batches
+
+# An automated optimization function
+def auto_optimize(prev_acc, im_size, trials):
+  num_epoch = 5
+  final_rate = 0
+  final_batch = 0
+  final_acc = 0
+  minibatches = [8, 16, 32, 64, 128]
+
+  for b_size in minibatches:
+    l_rate = 0.1
+    attempt = 1
+    while attempt <= trials:
+      train, validation = prepare(b_size, im_size)
+      model_f = build(l_rate, adam, im_size)
+      val_acc, final_m = train_model(model_f, train, validation, num_epoch)
+      f_acc = final_accuracy(val_acc)
+
+      if f_acc > prev_acc:
+        train_time()
+        print("Improvements on accuracy, new parameters are:")
+        print("Batch size:", b_size, "learning rate:", l_rate, "validation accuracy:", f_acc)
+        prev_acc = f_acc  # Updating accuracy
+        # Obtaining best model parameters
+        final_acc = f_acc
+        final_rate = l_rate
+        final_batch = b_size
+      else:
+         print("Unfreezing the Model and retrain:")
+         train_time()
+         unf_model, new_rate = unfreeze_model(model_f, l_rate)
+         val_acc, final_m = train_model(unf_model, train, validation, num_epoch)
+         f_acc = final_accuracy(val_acc)
+         if f_acc > prev_acc:
+           train_time()
+           print("Improvements on accuracy, new parameters are:")
+           print("Batch size:", b_size, "learning rate:", new_rate, "validation accuracy:", f_acc)
+           prev_acc = f_acc  # Updating accuracy
+           # Obtaining best model parameters
+           final_acc = f_acc
+           final_rate = l_rate
+           final_batch = b_size
+         else:
+            print("No performance improvement for selected parameters")
+            print("Batch size:", b_size, "learning rate:", new_rate)
+      
+      print("Attempt: ", attempt)
+      attempt += 1
+      l_rate /= 10
+
+  print("Final best model parameters:")
+  print("Batch size:", final_batch, "learning rate:", final_rate, "validation accuracy:", final_acc)
+  train_time()
+
+# Beginning of the execution
+# Initializing defult variables for training
+batch_size = 32
+l_rate = 0.001
+im_size = 224
+num_epoch = 2
+trials_n = 4
+
+#minibatches = []
+# minibatches = createMiniBatches(batch_size)
+
+# Optimizers
+sgd = SGD(learning_rate=l_rate, momentum=.9, nesterov=False)
+adam = Adam(learning_rate=l_rate, beta_1=0.9, beta_2=0.999, epsilon=None, amsgrad=False)
+rmsprop = RMSprop(learning_rate=l_rate)
+
+# Initialization of variables
+optim = sgd
+train_generator, validation_generator = prepare(batch_size, im_size)
+model_final = build(l_rate, optim, im_size)
+
+print("Initializing the training to build a surrogate model")
+train_time()
+val_accuracy, final_model = train_model(model_final, train_generator, validation_generator, num_epoch)
+ini_acc = final_accuracy(val_accuracy)
+print("Initial accuracy is:", ini_acc, "batch size:", batch_size, "learning rate:", l_rate, "optimizer: Adam")
+train_time()
+
+print("Initializing the Automated Optimization Process")
+train_time()
+auto_optimize(ini_acc, im_size, trials_n)
+print("Completion of Automated Optimization Process")
