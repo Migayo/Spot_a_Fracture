@@ -1,0 +1,119 @@
+import os 
+import zipfile 
+import tensorflow as tf 
+from tensorflow.keras.preprocessing.image import ImageDataGenerator 
+from tensorflow.keras import layers 
+from tensorflow.keras import Model 
+import matplotlib.pyplot as plt
+
+#Downloading the dataset
+!wget --no-check-certificate \
+    https://storage.googleapis.com/mledu-datasets/cats_and_dogs_filtered.zip \
+    -O /tmp/cats_and_dogs_filtered.zip
+
+local_zip = '/tmp/cats_and_dogs_filtered.zip'
+zip_ref = zipfile.ZipFile(local_zip, 'r')
+zip_ref.extractall('/tmp')
+zip_ref.close()
+
+base_dir = '/tmp/cats_and_dogs_filtered'
+train_dir = os.path.join(base_dir, 'train')
+validation_dir = os.path.join(base_dir, 'validation')
+
+# Directory with our training cat pictures
+train_cats_dir = os.path.join(train_dir, 'cats')
+
+# Directory with our training dog pictures
+train_dogs_dir = os.path.join(train_dir, 'dogs')
+
+# Directory with our validation cat pictures
+validation_cats_dir = os.path.join(validation_dir, 'cats')
+
+# Directory with our validation dog pictures
+validation_dogs_dir = os.path.join(validation_dir, 'dogs')
+
+# The following code will let us check if the images have been loaded correctly:
+# Set up matplotlib fig, and size it to fit 4x4 pics
+import matplotlib.image as mpimg
+nrows = 4
+ncols = 4
+
+fig = plt.gcf()
+fig.set_size_inches(ncols*4, nrows*4)
+pic_index = 100
+train_cat_fnames = os.listdir( train_cats_dir )
+train_dog_fnames = os.listdir( train_dogs_dir )
+
+next_cat_pix = [os.path.join(train_cats_dir, fname) 
+                for fname in train_cat_fnames[ pic_index-8:pic_index] 
+               ]
+
+next_dog_pix = [os.path.join(train_dogs_dir, fname) 
+                for fname in train_dog_fnames[ pic_index-8:pic_index]
+               ]
+
+for i, img_path in enumerate(next_cat_pix+next_dog_pix):
+  # Set up subplot; subplot indices start at 1
+  sp = plt.subplot(nrows, ncols, i + 1)
+  sp.axis('Off') # Don't show axes (or gridlines)
+
+  img = mpimg.imread(img_path)
+  plt.imshow(img)
+plt.show()
+
+# Add data-augmentation parameters to ImageDataGenerator
+train_datagen = ImageDataGenerator(rescale = 1./255.,rotation_range = 40, width_shift_range = 0.2, height_shift_range = 0.2, shear_range = 0.2, zoom_range = 0.2, horizontal_flip = True)
+
+# Note that the validation data should not be augmented!
+test_datagen = ImageDataGenerator( rescale = 1.0/255. )
+
+train_generator = train_datagen.flow_from_directory(train_dir, batch_size = 32, class_mode = 'binary', target_size = (150, 150))
+validation_generator = test_datagen.flow_from_directory(validation_dir, batch_size = 32, class_mode = 'binary', target_size = (150, 150))
+
+#Loading the DL model
+from tensorflow.keras.applications.inception_v3 import InceptionV3
+base_model = InceptionV3(input_shape = (150, 150, 3), include_top = False, weights = 'imagenet')
+for layer in base_model.layers:
+    layer.trainable = False
+# Optimizers 
+from tensorflow.keras.optimizers import Adam, SGD, RMSprop
+
+#Model Configurations
+l_rate = 0.001
+sgd = SGD(learning_rate=l_rate, momentum=.9, nesterov=False)
+adam = Adam(learning_rate=l_rate, beta_1=0.9, beta_2=0.999, epsilon=None, amsgrad=False)
+rmsprop = RMSprop(learning_rate=l_rate)
+x = layers.Flatten()(base_model.output)
+x = layers.Dense(1024, activation='relu')(x)
+x = layers.Dropout(0.2)(x)
+
+# Add a final sigmoid layer with 1 node for classification output
+x = layers.Dense(1, activation='sigmoid')(x)
+
+model = tf.keras.models.Model(base_model.input, x)
+model.compile(optimizer = rmsprop, loss = 'binary_crossentropy', metrics = ['acc'])
+# model.summary()
+# len(model.layers)
+
+# Function to print the training time before, during, and after optimization
+from datetime import datetime
+def train_time():
+  now = datetime.now()
+  current_time = now.strftime("%H:%M:%S")
+  print("The current time is:", current_time)
+
+# Optimizers 
+from tensorflow.keras.optimizers import Adam, SGD, RMSprop
+l_rate = 0.001
+sgd = SGD(learning_rate=l_rate, momentum=.9, nesterov=False)
+adam = Adam(learning_rate=l_rate, beta_1=0.9, beta_2=0.999, epsilon=None, amsgrad=False)
+rmsprop = RMSprop(learning_rate=l_rate)
+
+import keras
+my_callbacks = [
+                keras.callbacks.EarlyStopping(patience=10,restore_best_weights=True),
+                keras.callbacks.ModelCheckpoint("my_Inception_model.h5", save_best_only=True)
+]
+train_time()                
+inc_history = model.fit(train_generator, validation_data = validation_generator,  epochs = 100, callbacks=my_callbacks)
+train_time()
